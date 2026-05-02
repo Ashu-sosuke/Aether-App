@@ -47,6 +47,6 @@ class SettingsDataStore(private val context: Context) {
     }
 
     companion object {
-        const val DEFAULT_SERVER_URL = "ws://10.0.2.2:8000"
+        const val DEFAULT_SERVER_URL = "https://aether-rl.onrender.com"
     }
 }

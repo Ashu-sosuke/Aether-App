@@ -97,7 +97,14 @@ class AetherWebSocketClient @Inject constructor(
             val connected = CompletableDeferred<Unit>()
             connectionJob = scope.launch {
                 try {
-                    client.webSocket(urlString = serverUrl.trimEnd('/') + "/ws") {
+                    val wsUrl = serverUrl.trim()
+                        .replace("https://", "wss://")
+                        .replace("http://", "ws://")
+                        .trimEnd('/')
+                    
+                    val finalUrl = if (wsUrl.endsWith("/ws")) wsUrl else "$wsUrl/ws"
+                    
+                    client.webSocket(urlString = finalUrl) {
                         session = this
                         connectionState.value = ConnectionState.CONNECTED
                         writerJob = launchWriter(this)
