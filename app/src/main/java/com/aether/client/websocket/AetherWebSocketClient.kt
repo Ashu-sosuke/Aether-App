@@ -1,307 +1,298 @@
 package com.aether.client.websocket
 
-import android.content.res.Resources
-import com.aether.client.BuildConfig
+import android.content.Context
+import android.os.Build
+import android.util.Log
+import android.view.WindowManager
 import com.aether.client.accessibility.AetherAccessibilityService
 import com.aether.client.data.datastore.SettingsDataStore
-import com.aether.client.data.model.AckMessage
-import com.aether.client.data.model.AckPayload
-import com.aether.client.data.model.CommandPayload
-import com.aether.client.data.model.HitlRequestPayload
-import com.aether.client.data.model.HitlResponseMessage
-import com.aether.client.data.model.HitlResponsePayload
-import com.aether.client.data.model.InboundMessage
-import com.aether.client.data.model.ObservationMessage
-import com.aether.client.data.model.ObservationPayload
-import com.aether.client.data.model.OutboundMessage
-import com.aether.client.data.model.StartTaskMessage
-import com.aether.client.data.model.StartTaskPayload
 import com.aether.client.overlay.OverlayManager
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.okhttp.OkHttp
-import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
-import io.ktor.client.plugins.websocket.WebSockets
-import io.ktor.client.plugins.websocket.webSocket
-import io.ktor.websocket.Frame
-import io.ktor.websocket.close
-import io.ktor.websocket.readText
-import io.ktor.websocket.send
-import java.util.UUID
-import javax.inject.Inject
-import javax.inject.Singleton
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
+import com.aether.client.data.model.*
+import io.ktor.client.*
+import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.websocket.*
+import io.ktor.websocket.*
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.decodeFromJsonElement
-import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.put
+import kotlinx.serialization.json.*
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+import javax.inject.Inject
+import javax.inject.Singleton
 
 @Singleton
 class AetherWebSocketClient @Inject constructor(
+    private val context: Context,
     private val overlayManager: OverlayManager,
     private val settingsDs: SettingsDataStore
 ) {
-    private val client = HttpClient(OkHttp) { install(WebSockets) }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val sendQueue = Channel<OutboundMessage>(Channel.BUFFERED)
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-        classDiscriminator = "_kind"
+    private val client = HttpClient(OkHttp) {
+        install(WebSockets) { 
+            pingInterval = 15_000 
+            maxFrameSize = 1024 * 1024 * 10 // 10MB to support large UI trees
+        }
     }
 
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val sendChannel = Channel<OutboundMessage>(capacity = Channel.UNLIMITED)
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
     private var session: DefaultClientWebSocketSession? = null
-    private var activeTaskId: String? = null
-    private var isStreaming: Boolean = false
-    private var connectionJob: Job? = null
-    private var streamJob: Job? = null
-    private var writerJob: Job? = null
+    var activeTaskId: String? = null
+        private set
+    private var isStreaming = false
+    private var observationJob: Job? = null
 
     val connectionState = MutableStateFlow<ConnectionState>(ConnectionState.DISCONNECTED)
-    val inboundMessages = MutableSharedFlow<InboundMessage>(replay = 0)
+    val inboundMessages = MutableSharedFlow<InboundMessage>(extraBufferCapacity = 16)
 
     sealed class ConnectionState {
         object DISCONNECTED : ConnectionState()
         object CONNECTING : ConnectionState()
         object CONNECTED : ConnectionState()
-        data class ERROR(val message: String) : ConnectionState()
+        data class ERROR(val msg: String) : ConnectionState()
     }
 
-    suspend fun connect(serverUrl: String) {
-        disconnect()
-        if (BuildConfig.USE_MOCK_WS) {
-            connectionState.value = ConnectionState.CONNECTING
-            delay(350L)
-            connectionState.value = ConnectionState.CONNECTED
-            startMockSender()
-            return
+    private suspend fun wakeUpServer(baseUrl: String) {
+        val httpUrl = baseUrl
+            .replace("wss://", "https://")
+            .replace("ws://", "http://")
+        val pingUrl = if (httpUrl.endsWith("/")) "${httpUrl}ping" else "$httpUrl/ping"
+        
+        Log.d("AetherWS", "Waking up server: $pingUrl")
+        val okHttpClient = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .build()
+
+        repeat(5) { attempt ->
+            try {
+                val request = Request.Builder().url(pingUrl).build()
+                val response = withContext(Dispatchers.IO) {
+                    okHttpClient.newCall(request).execute()
+                }
+                if (response.isSuccessful) {
+                    Log.d("AetherWS", "Server is awake!")
+                    return
+                }
+            } catch (e: Exception) {
+                Log.w("AetherWS", "Ping attempt ${attempt + 1} failed: ${e.message}")
+                delay(3000L * (attempt + 1))
+            }
+        }
+        Log.e("AetherWS", "Server did not wake up after 5 attempts")
+    }
+
+    suspend fun connect(url: String) {
+        if (connectionState.value == ConnectionState.CONNECTING || 
+            connectionState.value == ConnectionState.CONNECTED) return
+
+        connectionState.value = ConnectionState.CONNECTING
+        
+        var cleanUrl = url.trim()
+        if (!cleanUrl.startsWith("ws://") && !cleanUrl.startsWith("wss://")) {
+            cleanUrl = if (cleanUrl.startsWith("https://")) {
+                cleanUrl.replace("https://", "wss://")
+            } else if (cleanUrl.startsWith("http://")) {
+                cleanUrl.replace("http://", "ws://")
+            } else {
+                "wss://$cleanUrl"
+            }
         }
 
-        var backoffMs = 1_000L
-        var lastError: Throwable? = null
-        repeat(5) {
-            connectionState.value = ConnectionState.CONNECTING
-            val connected = CompletableDeferred<Unit>()
-            connectionJob = scope.launch {
-                try {
-                    val wsUrl = serverUrl.trim()
-                        .replace("https://", "wss://")
-                        .replace("http://", "ws://")
-                        .trimEnd('/')
-                    
-                    val finalUrl = if (wsUrl.endsWith("/ws")) wsUrl else "$wsUrl/ws"
-                    
-                    client.webSocket(urlString = finalUrl) {
-                        session = this
-                        connectionState.value = ConnectionState.CONNECTED
-                        writerJob = launchWriter(this)
-                        connected.complete(Unit)
-                        startReceiving()
+        // Wake up server before WebSocket connection (Bug 10)
+        wakeUpServer(cleanUrl)
+
+        serviceScope.launch {
+            try {
+                val finalWsUrl = if (!cleanUrl.endsWith("/ws")) {
+                    if (cleanUrl.endsWith("/")) "${cleanUrl}ws" else "$cleanUrl/ws"
+                } else cleanUrl
+
+                Log.d("WS", "Connecting to: $finalWsUrl")
+                client.webSocket(finalWsUrl) {
+                    session = this
+                    connectionState.value = ConnectionState.CONNECTED
+
+                    // Coroutine-safe Send Loop (Bug 4)
+                    val senderJob = launch {
+                        for (msg in sendChannel) {
+                            try {
+                                val text = json.encodeToString(msg)
+                                send(Frame.Text(text))
+                            } catch (e: Exception) {
+                                Log.e("WS", "Send failed: ${e.message}")
+                            }
+                        }
                     }
-                } catch (t: Throwable) {
-                    lastError = t
-                    if (!connected.isCompleted) connected.completeExceptionally(t)
-                    connectionState.value = ConnectionState.ERROR(t.message ?: "WebSocket connection failed")
-                } finally {
-                    writerJob?.cancel()
-                    writerJob = null
-                    session = null
-                    if (connectionState.value is ConnectionState.CONNECTED) {
-                        connectionState.value = ConnectionState.DISCONNECTED
+
+                    // Reader loop
+                    try {
+                        for (frame in incoming) {
+                            if (frame is Frame.Text) {
+                                handleInbound(frame.readText())
+                            }
+                        }
+                    } finally {
+                        senderJob.cancel()
                     }
                 }
-            }
-
-            runCatching { withTimeout(10_000L) { connected.await() } }
-                .onSuccess { return }
-            delay(backoffMs)
-            backoffMs = (backoffMs * 2).coerceAtMost(32_000L)
-        }
-        connectionState.value = ConnectionState.ERROR(lastError?.message ?: "Unable to connect after retries")
-    }
-
-    private fun disconnect() {
-        isStreaming = false
-        activeTaskId = null
-        streamJob?.cancel()
-        writerJob?.cancel()
-        connectionJob?.cancel()
-        scope.launch { session?.close() }
-        session = null
-    }
-
-    private fun launchWriter(wsSession: DefaultClientWebSocketSession): Job = scope.launch {
-        for (message in sendQueue) {
-            wsSession.send(Frame.Text(encodeOutbound(message)))
-        }
-    }
-
-    private suspend fun startReceiving() {
-        val current = session ?: return
-        for (frame in current.incoming) {
-            if (frame is Frame.Text) {
-                val msg = json.decodeFromString<InboundMessage>(frame.readText())
-                inboundMessages.emit(msg)
-                handleInbound(msg)
+            } catch (e: Exception) {
+                Log.e("WS", "Connection error: ${e.message}")
+                connectionState.value = ConnectionState.ERROR(e.message ?: "Unknown Error")
+            } finally {
+                connectionState.value = ConnectionState.DISCONNECTED
+                session = null
             }
         }
     }
 
-    private suspend fun handleInbound(msg: InboundMessage) {
-        when (msg.type) {
-            "command" -> {
+    private suspend fun handleInbound(text: String) {
+        try {
+            val msg = json.decodeFromString<InboundMessage>(text)
+            inboundMessages.tryEmit(msg)
+            if (msg.type == "command") {
                 val payload = json.decodeFromJsonElement<CommandPayload>(msg.payload)
-                val command = payload.action
-                val node = AetherAccessibilityService.findCachedNodeById(command.nodeId)
-                if (node != null) {
-                    val cx = ((node.boundsLeft + node.boundsRight) / 2).toFloat()
-                    val cy = ((node.boundsTop + node.boundsBottom) / 2).toFloat()
-                    overlayManager.showTap(cx, cy)
-                } else if (command.x != null && command.y != null) {
-                    overlayManager.showTap(command.x, command.y)
+                
+                // Show ripple
+                payload.action.x?.let { x ->
+                    payload.action.y?.let { y ->
+                        overlayManager.showTap(x, y)
+                    }
                 }
 
-                val success = AetherAccessibilityService.instance?.performAction(command) ?: false
-                sendAck(msg.taskId, command.actionId, if (success) "success" else "failed")
-            }
-            "hitl_required" -> {
-                json.decodeFromJsonElement<HitlRequestPayload>(msg.payload)
-            }
-            "task_complete", "task_failed" -> {
-                isStreaming = false
-                activeTaskId = null
-                streamJob?.cancel()
-            }
-        }
-    }
+                // Check service instance (Bug 8)
+                val service = AetherAccessibilityService.instance
+                if (service == null) {
+                    Log.e("AetherWS", "AccessibilityService is null")
+                    send(AckMessage(taskId = msg.taskId, payload = AckPayload(payload.action.actionId, "failed")))
+                    return
+                }
 
-    suspend fun send(message: OutboundMessage) {
-        if (BuildConfig.USE_MOCK_WS) return
-        sendQueue.send(message)
-    }
-
-    suspend fun sendAck(taskId: String, actionId: String, status: String) {
-        send(AckMessage(taskId = taskId, payload = AckPayload(actionId, status)))
-    }
-
-    suspend fun sendHitlResponse(taskId: String, approved: Boolean) {
-        send(HitlResponseMessage(taskId = taskId, payload = HitlResponsePayload(approved)))
-        if (BuildConfig.USE_MOCK_WS) {
-            val payload = buildJsonObject {
-                put("status", if (approved) "done" else "cancelled")
-                put("message", if (approved) "Mock approval accepted" else "Mock task denied")
+                val success = service.performAction(payload.action)
+                send(AckMessage(taskId = msg.taskId, payload = AckPayload(payload.action.actionId, if (success) "success" else "failed")))
+            } else if (msg.type == "task_complete" || msg.type == "task_failed") {
+                stopStreaming()
             }
-            inboundMessages.emit(
-                InboundMessage(
-                    type = if (approved) "task_complete" else "task_failed",
-                    taskId = taskId,
-                    payload = payload
-                )
-            )
-        }
+        } catch (e: Exception) { Log.e("WS", "Inbound Error: ${e.message}") }
     }
 
     suspend fun startTask(goal: String): String {
         val taskId = UUID.randomUUID().toString()
         activeTaskId = taskId
         isStreaming = true
-        val userId = settingsDs.ensureUserId()
-        send(StartTaskMessage(taskId = taskId, payload = StartTaskPayload(goal = goal, userId = userId)))
+
+        // 1. Send start_task
+        send(StartTaskMessage(
+            taskId  = taskId,
+            payload = StartTaskPayload(goal = goal, userId = getUserIdSync())
+        ))
+        Log.d("AetherWS", "start_task sent — taskId=$taskId goal='$goal'")
+
+        // 2. Immediately force-send cached node tree (Bug 3)
+        val cachedNodes = AetherAccessibilityService.nodeTreeFlow.replayCache.firstOrNull()
+        if (cachedNodes != null && cachedNodes.isNotEmpty()) {
+            Log.d("AetherWS", "Force-sending initial observation: ${cachedNodes.size} nodes")
+            send(ObservationMessage(
+                taskId  = taskId,
+                payload = ObservationPayload(
+                    nodes         = cachedNodes,
+                    activePackage = getActivePackage(),
+                    screenWidth   = getScreenWidth(),
+                    screenHeight  = getScreenHeight()
+                )
+            ))
+        } else {
+            Log.w("AetherWS", "No cached node tree yet — will send on next event")
+        }
+
+        // 3. Start continuous stream
         startStreamingObservations(taskId)
-        if (BuildConfig.USE_MOCK_WS) simulateMockTask(taskId, goal)
         return taskId
     }
 
     private fun startStreamingObservations(taskId: String) {
-        streamJob?.cancel()
-        streamJob = scope.launch {
-            var lastSent = 0L
+        observationJob?.cancel()
+        observationJob = serviceScope.launch {
+            var lastSentMs = 0L
             AetherAccessibilityService.nodeTreeFlow.collect { nodes ->
                 if (!isStreaming || activeTaskId != taskId) return@collect
                 val now = System.currentTimeMillis()
-                if (now - lastSent < 500L) return@collect
-                lastSent = now
-                val metrics = Resources.getSystem().displayMetrics
-                send(
-                    ObservationMessage(
-                        taskId = taskId,
+                if (now - lastSentMs < 500) return@collect   // throttle 500ms
+                lastSentMs = now
+                Log.d("AetherWS", "Streaming observation: ${nodes.size} nodes")
+                try {
+                    send(ObservationMessage(
+                        taskId  = taskId,
                         payload = ObservationPayload(
-                            nodes = nodes,
-                            activePackage = AetherAccessibilityService.activePackageName,
-                            screenWidth = metrics.widthPixels,
-                            screenHeight = metrics.heightPixels
+                            nodes         = nodes,
+                            activePackage = getActivePackage(),
+                            screenWidth   = getScreenWidth(),
+                            screenHeight  = getScreenHeight()
                         )
-                    )
-                )
+                    ))
+                } catch (e: Exception) {
+                    Log.e("AetherWS", "Observation send failed: ${e.message}")
+                }
             }
         }
     }
 
-    private fun startMockSender() {
-        scope.launch {
-            while (isActive) delay(5_000L)
-        }
+    fun stopStreaming() {
+        isStreaming = false
+        activeTaskId = null
+        observationJob?.cancel()
+        observationJob = null
     }
 
-    private fun simulateMockTask(taskId: String, goal: String) {
-        scope.launch {
-            delay(700L)
-            inboundMessages.emit(
-                InboundMessage(
-                    type = "token_update",
-                    taskId = taskId,
-                    payload = buildJsonObject {
-                        put("status", "ok")
-                        put("message", "97")
-                    }
-                )
-            )
-            delay(700L)
-            val cachedNode = AetherAccessibilityService.lastNodeTree.firstOrNull { it.isClickable }
-            if (cachedNode != null) {
-                val action = com.aether.client.data.model.ActionCommand(
-                    actionId = UUID.randomUUID().toString(),
-                    nodeId = cachedNode.nodeId,
-                    type = com.aether.client.data.model.ActionType.TAP
-                )
-                val command = InboundMessage(
-                    type = "command",
-                    taskId = taskId,
-                    payload = json.encodeToJsonElement(CommandPayload(action))
-                )
-                inboundMessages.emit(command)
-                handleInbound(command)
+    suspend fun stopTask(taskId: String) {
+        send(StopTaskMessage(taskId = taskId))
+        stopStreaming()
+    }
+
+    suspend fun sendHitlResponse(taskId: String, approved: Boolean) {
+        send(HitlResponseMessage(taskId = taskId, payload = HitlResponsePayload(approved = approved)))
+    }
+
+    private suspend fun send(message: OutboundMessage) {
+        sendChannel.send(message)
+    }
+
+    private fun getUserIdSync(): String {
+        return "user_default"
+    }
+
+    private fun getActivePackage(): String {
+        return AetherAccessibilityService.instance
+            ?.rootInActiveWindow?.packageName?.toString() ?: "unknown"
+    }
+
+    private fun getScreenWidth(): Int {
+        return try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                wm.currentWindowMetrics.bounds.width()
+            } else {
+                @Suppress("DEPRECATION")
+                wm.defaultDisplay.width
             }
-            delay(800L)
-            inboundMessages.emit(
-                InboundMessage(
-                    type = "hitl_required",
-                    taskId = taskId,
-                    payload = json.encodeToJsonElement(
-                        HitlRequestPayload("Confirm completion of mock goal: $goal")
-                    )
-                )
-            )
-        }
+        } catch (e: Exception) { 1080 }
     }
 
-    private fun encodeOutbound(message: OutboundMessage): String = when (message) {
-        is ObservationMessage -> json.encodeToString(message)
-        is AckMessage -> json.encodeToString(message)
-        is HitlResponseMessage -> json.encodeToString(message)
-        is StartTaskMessage -> json.encodeToString(message)
+    private fun getScreenHeight(): Int {
+        return try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                wm.currentWindowMetrics.bounds.height()
+            } else {
+                @Suppress("DEPRECATION")
+                wm.defaultDisplay.height
+            }
+        } catch (e: Exception) { 1920 }
     }
 }

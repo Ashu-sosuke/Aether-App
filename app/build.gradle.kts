@@ -22,7 +22,7 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("Boolean", "USE_MOCK_WS", "true")
+            buildConfigField("Boolean", "USE_MOCK_WS", "false")
         }
         release {
             isMinifyEnabled = false

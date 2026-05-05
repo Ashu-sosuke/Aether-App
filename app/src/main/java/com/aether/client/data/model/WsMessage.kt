@@ -1,19 +1,19 @@
 package com.aether.client.data.model
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 @Serializable
 sealed class OutboundMessage {
-    abstract val type: String
     abstract val taskId: String
 }
 
 @Serializable
+@SerialName("observation")
 data class ObservationMessage(
-    override val type: String = "observation",
-    override val taskId: String = "",
+    override val taskId: String,
     val payload: ObservationPayload = ObservationPayload()
 ) : OutboundMessage()
 
@@ -26,9 +26,9 @@ data class ObservationPayload(
 )
 
 @Serializable
+@SerialName("ack")
 data class AckMessage(
-    override val type: String = "ack",
-    override val taskId: String = "",
+    override val taskId: String,
     val payload: AckPayload = AckPayload()
 ) : OutboundMessage()
 
@@ -39,9 +39,9 @@ data class AckPayload(
 )
 
 @Serializable
+@SerialName("hitl_response")
 data class HitlResponseMessage(
-    override val type: String = "hitl_response",
-    override val taskId: String = "",
+    override val taskId: String,
     val payload: HitlResponsePayload = HitlResponsePayload()
 ) : OutboundMessage()
 
@@ -51,9 +51,9 @@ data class HitlResponsePayload(
 )
 
 @Serializable
+@SerialName("start_task")
 data class StartTaskMessage(
-    override val type: String = "start_task",
-    override val taskId: String = "",
+    override val taskId: String,
     val payload: StartTaskPayload = StartTaskPayload()
 ) : OutboundMessage()
 
@@ -62,6 +62,13 @@ data class StartTaskPayload(
     val goal: String = "",
     val userId: String = "user_default"
 )
+
+@Serializable
+@SerialName("stop_task")
+data class StopTaskMessage(
+    override val taskId: String,
+    val payload: JsonObject = JsonObject(emptyMap())
+) : OutboundMessage()
 
 @Serializable
 data class InboundMessage(

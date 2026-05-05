@@ -50,7 +50,7 @@ fun SettingsScreen(
     onRequestOverlayPermission: () -> Unit,
     onBack: () -> Unit
 ) {
-    var localUrl by remember { mutableStateOf(serverUrl) }
+    var localUrl by remember { mutableStateOf( "https://aether-rl.onrender.com" ) }
     LaunchedEffect(serverUrl) { localUrl = serverUrl }
     val saveUrl = { onServerUrlChange(localUrl) }
 

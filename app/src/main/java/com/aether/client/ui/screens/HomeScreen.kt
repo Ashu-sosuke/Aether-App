@@ -1,37 +1,13 @@
 package com.aether.client.ui.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -53,6 +29,8 @@ fun HomeScreen(
     actionLog: List<String>,
     hitlRequest: HitlUiState?,
     errorMessage: String?,
+    accessibilityEnabled: Boolean, // Added parameter
+    overlayGranted: Boolean,      // Added parameter
     onConnect: () -> Unit,
     onRunTask: (String) -> Unit,
     onApproveHitl: (String, Boolean) -> Unit,
@@ -60,7 +38,14 @@ fun HomeScreen(
 ) {
     var goal by rememberSaveable { mutableStateOf("") }
     val isConnected = connectionState is AetherWebSocketClient.ConnectionState.CONNECTED
-    val canRun = isConnected && taskStatus == TaskStatus.IDLE && goal.isNotBlank()
+
+    // Logic to determine if the Run button should be active
+    val canRun = isConnected &&
+            taskStatus == TaskStatus.IDLE &&
+            goal.isNotBlank() &&
+            accessibilityEnabled &&
+            overlayGranted
+
     val submit = {
         if (canRun) {
             onRunTask(goal)
@@ -103,9 +88,14 @@ fun HomeScreen(
                     keyboardActions = KeyboardActions(onSend = { submit() }),
                     modifier = Modifier.weight(1f)
                 )
-                Button(onClick = submit, enabled = canRun) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                    Text(stringResource(R.string.run))
+                Button(
+                    onClick = { submit() },
+                    enabled = canRun,
+                    modifier = Modifier.width(100.dp)
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Run")
                 }
             }
 

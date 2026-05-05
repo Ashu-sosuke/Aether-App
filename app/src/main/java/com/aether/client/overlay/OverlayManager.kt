@@ -14,8 +14,11 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.ImageView
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,6 +30,7 @@ class OverlayManager @Inject constructor(
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val overlayViews = mutableSetOf<View>()
+    private var stopButton: View? = null
 
     fun hasOverlayPermission(): Boolean = Settings.canDrawOverlays(context)
 
@@ -65,6 +69,85 @@ class OverlayManager @Inject constructor(
                 overlayViews.add(view)
                 view.start()
                 mainHandler.postDelayed({ removeView(view) }, 700L)
+            }
+        }
+    }
+
+    fun showStopButton(onStop: () -> Unit) {
+        mainHandler.post {
+            if (!hasOverlayPermission() || stopButton != null) return@post
+            
+            val size = 64.dp
+            val params = WindowManager.LayoutParams(
+                size,
+                size,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 20.dp
+                y = 100.dp
+            }
+
+            val view = FrameLayout(context).apply {
+                // Background
+                val bg = View(context).apply {
+                    setBackgroundColor(Color.parseColor("#FF6B6B"))
+                    alpha = 0.9f
+                    elevation = 8f.dp.toFloat()
+                }
+                addView(bg)
+
+                // Icon (using a simple cross/X if we don't have vector resources, but let's assume standard)
+                val icon = ImageView(context).apply {
+                    setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
+                    setColorFilter(Color.WHITE)
+                    setPadding(16.dp, 16.dp, 16.dp, 16.dp)
+                }
+                addView(icon)
+
+                setOnClickListener { onStop() }
+                
+                // Make it draggable
+                var initialX = 0
+                var initialY = 0
+                var initialTouchX = 0f
+                var initialTouchY = 0f
+
+                setOnTouchListener { v, event ->
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            initialX = params.x
+                            initialY = params.y
+                            initialTouchX = event.rawX
+                            initialTouchY = event.rawY
+                            true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            params.x = initialX + (event.rawX - initialTouchX).toInt()
+                            params.y = initialY + (event.rawY - initialTouchY).toInt()
+                            windowManager.updateViewLayout(v, params)
+                            true
+                        }
+                        else -> false
+                    }
+                }
+            }
+
+            runCatching {
+                windowManager.addView(view, params)
+                stopButton = view
+            }
+        }
+    }
+
+    fun hideStopButton() {
+        mainHandler.post {
+            stopButton?.let {
+                removeView(it)
+                stopButton = null
             }
         }
     }

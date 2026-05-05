@@ -1,12 +1,15 @@
 package com.aether.client.ui.viewmodel
 
 import android.content.Context
+import android.content.Intent
+import android.util.Log
 import com.aether.client.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aether.client.data.datastore.SettingsDataStore
 import com.aether.client.data.model.CommandPayload
 import com.aether.client.data.model.HitlRequestPayload
+import com.aether.client.data.model.InboundMessage
 import com.aether.client.data.model.StatusPayload
 import com.aether.client.data.model.TaskStatus
 import com.aether.client.overlay.OverlayManager
@@ -68,9 +71,33 @@ class AetherViewModel @Inject constructor(
         viewModelScope.launch(handler) {
             val trimmedGoal = goal.trim()
             if (trimmedGoal.isBlank()) return@launch
-            taskStatus.value = TaskStatus.THINKING
-            val taskId = wsClient.startTask(trimmedGoal)
-            appendLog(context.getString(R.string.task_started_log, trimmedGoal, taskId))
+            try {
+                if (wsClient.connectionState.value !is AetherWebSocketClient.ConnectionState.CONNECTED) {
+                    errorMessage.value = "Not connected to Brain. Please check your URL and try again."
+                    taskStatus.value = TaskStatus.ERROR
+                    return@launch
+                }
+
+                taskStatus.value = TaskStatus.THINKING
+                val taskId = wsClient.startTask(trimmedGoal)
+                appendLog(context.getString(R.string.task_started_log, trimmedGoal, taskId))
+                
+                // Show floating stop button
+                overlayMgr.showStopButton {
+                    stopTask()
+                }
+                
+                // Auto-minimize the app to trigger accessibility events in other apps
+                val startMain = Intent(Intent.ACTION_MAIN)
+                startMain.addCategory(Intent.CATEGORY_HOME)
+                startMain.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(startMain)
+                
+            } catch (e: Exception) {
+                Log.e("AetherVM", "Failed to start task: ${e.message}", e)
+                errorMessage.value = "Connection failed: ${e.message}"
+                taskStatus.value = TaskStatus.ERROR
+            }
         }
     }
 
@@ -79,6 +106,18 @@ class AetherViewModel @Inject constructor(
             wsClient.sendHitlResponse(taskId, approved)
             hitlRequest.value = null
             taskStatus.value = if (approved) TaskStatus.EXECUTING else TaskStatus.IDLE
+        }
+    }
+
+    fun stopTask() {
+        viewModelScope.launch(handler) {
+            val taskId = wsClient.activeTaskId
+            if (taskId != null) {
+                wsClient.stopTask(taskId)
+                appendLog("Task stopped by user.")
+                taskStatus.value = TaskStatus.IDLE
+                overlayMgr.hideStopButton()
+            }
         }
     }
 
@@ -110,12 +149,14 @@ class AetherViewModel @Inject constructor(
                     "task_complete" -> {
                         taskStatus.value = TaskStatus.DONE
                         appendLog(context.getString(R.string.task_completed_log))
+                        overlayMgr.hideStopButton()
                     }
                     "task_failed" -> {
                         taskStatus.value = TaskStatus.ERROR
                         val p = json.decodeFromJsonElement<StatusPayload>(msg.payload)
                         errorMessage.value = p.message
                         appendLog(context.getString(R.string.task_failed_log, p.message))
+                        overlayMgr.hideStopButton()
                     }
                     "token_update" -> {
                         val p = json.decodeFromJsonElement<StatusPayload>(msg.payload)

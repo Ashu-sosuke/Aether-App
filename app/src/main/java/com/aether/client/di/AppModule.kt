@@ -27,7 +27,8 @@ object AppModule {
     @Provides
     @Singleton
     fun provideAetherWebSocketClient(
+        @ApplicationContext context: Context,
         overlayManager: OverlayManager,
         settingsDs: SettingsDataStore
-    ): AetherWebSocketClient = AetherWebSocketClient(overlayManager, settingsDs)
+    ): AetherWebSocketClient = AetherWebSocketClient(context, overlayManager, settingsDs)
 }
