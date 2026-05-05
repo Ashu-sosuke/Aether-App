@@ -115,6 +115,7 @@ class OverlayManager @Inject constructor(
                 var initialY = 0
                 var initialTouchX = 0f
                 var initialTouchY = 0f
+                var startTime = 0L
 
                 setOnTouchListener { v, event ->
                     when (event.action) {
@@ -123,12 +124,24 @@ class OverlayManager @Inject constructor(
                             initialY = params.y
                             initialTouchX = event.rawX
                             initialTouchY = event.rawY
+                            startTime = System.currentTimeMillis()
                             true
                         }
                         MotionEvent.ACTION_MOVE -> {
                             params.x = initialX + (event.rawX - initialTouchX).toInt()
                             params.y = initialY + (event.rawY - initialTouchY).toInt()
                             windowManager.updateViewLayout(v, params)
+                            true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            val duration = System.currentTimeMillis() - startTime
+                            val dx = Math.abs(event.rawX - initialTouchX)
+                            val dy = Math.abs(event.rawY - initialTouchY)
+                            
+                            // If moved less than 10 pixels and held for less than 300ms, it's a click
+                            if (dx < 10 && dy < 10 && duration < 300) {
+                                v.performClick()
+                            }
                             true
                         }
                         else -> false
