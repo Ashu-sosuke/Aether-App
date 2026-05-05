@@ -74,6 +74,28 @@ class AetherAccessibilityService : AccessibilityService() {
         }
     }
 
+    fun forceScrape() {
+        val root = rootInActiveWindow ?: return
+        val activePackage = root.packageName?.toString() ?: ""
+        
+        // Even for forced scrape, don't send our own app as it confuses the LLM
+        if (activePackage == packageName) {
+            root.recycle()
+            return
+        }
+
+        try {
+            val nodes = scrapeNodeTree(root)
+            lastNodeList = nodes
+            Log.d("AetherAS", "Forced Scrape: Emitting ${nodes.size} nodes from $activePackage")
+            nodeTreeFlow.tryEmit(nodes)
+        } catch (e: Exception) {
+            Log.e("AetherAS", "Forced scrape failed: ${e.message}")
+        } finally {
+            try { root.recycle() } catch (e: Exception) { }
+        }
+    }
+
     private fun scrapeNodeTree(root: AccessibilityNodeInfo): List<NodeData> {
         val result = mutableListOf<NodeData>()
         val stack = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()

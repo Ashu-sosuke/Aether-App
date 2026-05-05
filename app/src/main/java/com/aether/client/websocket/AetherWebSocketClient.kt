@@ -213,6 +213,13 @@ class AetherWebSocketClient @Inject constructor(
 
         // 3. Start continuous stream
         startStreamingObservations(taskId)
+
+        // 4. Force a scrape after a short delay to account for the app minimizing
+        serviceScope.launch {
+            delay(1000L) // Wait for Home screen to be in focus
+            AetherAccessibilityService.instance?.forceScrape()
+        }
+
         return taskId
     }
 
