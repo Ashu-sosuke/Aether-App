@@ -138,15 +138,17 @@ class OverlayManager @Inject constructor(
                             val dx = Math.abs(event.rawX - initialTouchX)
                             val dy = Math.abs(event.rawY - initialTouchY)
                             
-                            // If moved less than 10 pixels and held for less than 300ms, it's a click
-                            if (dx < 10 && dy < 10 && duration < 300) {
-                                v.performClick()
+                            if (dx < 10.dp && dy < 10.dp && duration < 400) {
+                                onStop()
                             }
                             true
                         }
                         else -> false
                     }
                 }
+                
+                isClickable = true
+                isFocusable = true
             }
 
             runCatching {
