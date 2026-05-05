@@ -96,7 +96,7 @@ class OverlayManager @Inject constructor(
                 val bg = View(context).apply {
                     setBackgroundColor(Color.parseColor("#FF6B6B"))
                     alpha = 0.9f
-                    elevation = 8f.dp.toFloat()
+                    elevation = 8.dp.toFloat()
                 }
                 addView(bg)
 
@@ -168,6 +168,9 @@ class OverlayManager @Inject constructor(
 
     private val Int.dp: Int
         get() = (this * context.resources.displayMetrics.density).toInt()
+
+    private val Float.dp: Float
+        get() = this * context.resources.displayMetrics.density
 
     private class GhostTapView(context: Context) : View(context) {
         private val density = context.resources.displayMetrics.density
