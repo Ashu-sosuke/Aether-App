@@ -19,8 +19,12 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
+import okhttp3.Dns
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.dnsoverhttps.DnsOverHttps
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.InetAddress
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -33,7 +37,24 @@ class AetherWebSocketClient @Inject constructor(
     private val overlayManager: OverlayManager,
     private val settingsDs: SettingsDataStore
 ) {
+    private val dnsResolver: Dns by lazy {
+        val bootstrapClient = OkHttpClient.Builder().build()
+        DnsOverHttps.Builder()
+            .client(bootstrapClient)
+            .url("https://dns.google/dns-query".toHttpUrl())
+            .bootstrapDnsHosts(listOf(
+                InetAddress.getByName("8.8.8.8"),
+                InetAddress.getByName("8.8.4.4")
+            ))
+            .build()
+    }
+
     private val client = HttpClient(OkHttp) {
+        engine {
+            config {
+                dns(dnsResolver)
+            }
+        }
         install(WebSockets) {
             pingInterval = 15_000
             maxFrameSize = 1024 * 1024 * 10 // 10MB
@@ -66,7 +87,9 @@ class AetherWebSocketClient @Inject constructor(
         val pingUrl = if (httpUrl.endsWith("/")) "${httpUrl}ping" else "$httpUrl/ping"
         Log.d("AetherWS", "Waking up server: $pingUrl")
         val okHttpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .dns(dnsResolver)
             .build()
 
         repeat(5) { attempt ->
@@ -78,7 +101,7 @@ class AetherWebSocketClient @Inject constructor(
                     return
                 }
             } catch (e: Exception) {
-                Log.w("AetherWS", "Ping attempt ${attempt + 1} failed")
+                Log.w("AetherWS", "Ping attempt ${attempt + 1} failed: ${e.javaClass.simpleName} - ${e.message}")
                 delay(3000L * (attempt + 1))
             }
         }
@@ -148,6 +171,12 @@ class AetherWebSocketClient @Inject constructor(
                 }
                 val success = service.performAction(payload.action)
                 send(AckMessage(taskId = msg.taskId, payload = AckPayload(payload.action.actionId, if (success) "success" else "failed")))
+                
+                // Proactively trigger a scrape after the action to ensure the server gets the new state
+                serviceScope.launch {
+                    delay(800) // Small delay for UI animation/settle
+                    service.forceScrapeNow()
+                }
             } else if (msg.type == "task_complete" || msg.type == "task_failed") {
                 stopStreaming()
             }
@@ -166,39 +195,12 @@ class AetherWebSocketClient @Inject constructor(
         ))
         Log.d("AetherWS", "start_task sent — taskId=$taskId goal='$goal'")
 
-        // 2. Start streaming observations BEFORE minimize to catch the first event
+        // 2. Start streaming observations
         startStreamingObservations(taskId)
 
-        // 3. Brief delay to let server register task listener
-        delay(600)
-
-        // 4. Minimize app to home screen
-        withContext(Dispatchers.Main) {
-            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_HOME)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            context.startActivity(homeIntent)
-        }
-
-        // 5. Wait for home screen to fully render and settle
-        delay(2000)
-
-        // 6. Force a scrape as a final guarantee with retries
-        var scrapeSuccess = false
-        repeat(5) { attempt ->
-            val success = AetherAccessibilityService.instance?.forceScrapeNow() == true
-            if (success) {
-                scrapeSuccess = true
-                Log.d("AetherWS", "Initial scrape successful on attempt ${attempt + 1}")
-                return@repeat
-            }
-            Log.w("AetherWS", "Initial scrape failed, retry ${attempt + 1}/5...")
-            delay(800)
-        }
-
-        if (!scrapeSuccess) {
-            Log.e("AetherWS", "Failed to get initial observation after 5 attempts")
+        // 3. Trigger initial scrape immediately
+        serviceScope.launch {
+            AetherAccessibilityService.instance?.forceScrapeNow()
         }
 
         return taskId
@@ -208,20 +210,28 @@ class AetherWebSocketClient @Inject constructor(
         observationJob?.cancel()
         observationJob = serviceScope.launch {
             var lastSentMs = 0L
-            AetherAccessibilityService.nodeTreeFlow.collect { nodes ->
-                if (!isStreaming || activeTaskId != taskId || nodes.isEmpty()) return@collect
+            AetherAccessibilityService.observationFlow.collect { obs ->
+                if (!isStreaming || activeTaskId != taskId) return@collect
+                
+                // Allow 'blind' type messages to pass through even if nodes/screenshot are empty
+                if (obs.nodes.isEmpty() && obs.screenshot == null && obs.type == "observation") return@collect
+                
                 val now = System.currentTimeMillis()
                 if (now - lastSentMs < 500) return@collect
                 lastSentMs = now
-                Log.d("AetherWS", "Streaming observation: ${nodes.size} nodes")
+                
+                Log.d("AetherWS", "Streaming observation: ${obs.nodes.size} nodes, type: ${obs.type}")
                 try {
                     send(ObservationMessage(
                         taskId  = taskId,
                         payload = ObservationPayload(
-                            nodes         = nodes,
+                            nodes         = obs.nodes,
                             activePackage = AetherAccessibilityService.lastActivePackage,
                             screenWidth   = getScreenWidth(),
-                            screenHeight  = getScreenHeight()
+                            screenHeight  = getScreenHeight(),
+                            screenshot    = obs.screenshot,
+                            type          = obs.type,
+                            reason        = obs.reason
                         )
                     ))
                 } catch (e: Exception) { Log.e("AetherWS", "Obs send failed") }

@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ActionCommand(
     val actionId: String = "",
-    val nodeId: String = "",
+    val nodeId: String? = null,
     val type: ActionType = ActionType.TAP,
     val text: String? = null,
     val x: Float? = null,

@@ -22,7 +22,10 @@ data class ObservationPayload(
     val nodes: List<NodeData> = emptyList(),
     val activePackage: String = "",
     val screenWidth: Int = 0,
-    val screenHeight: Int = 0
+    val screenHeight: Int = 0,
+    val screenshot: String? = null, // Base64 encoded JPEG
+    val type: String = "observation", // "observation" or "blind"
+    val reason: String? = null
 )
 
 @Serializable

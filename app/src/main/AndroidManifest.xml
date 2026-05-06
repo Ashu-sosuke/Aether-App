@@ -8,6 +8,19 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <queries>
+        <!-- Intent-based searching: This allows Aether to find any app that can open a web URL or be a Launcher -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+
+        <!-- Specific package visibility for common targets -->
+        <package android:name="com.google.android.youtube" />
+        <package android:name="in.swiggy.android" />
+        <package android:name="com.google.android.gm" /> <!-- Gmail -->
+    </queries>
+
     <application
         android:name=".AetherApplication"
         android:allowBackup="true"

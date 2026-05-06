@@ -20,5 +20,9 @@ enum class ActionType {
     @SerialName("back")
     BACK,
     @SerialName("home")
-    HOME
+    HOME,
+    @SerialName("open_app")
+    OPEN_APP,
+    @SerialName("open_url")
+    OPEN_URL
 }

@@ -13,6 +13,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -92,23 +93,31 @@ class OverlayManager @Inject constructor(
             }
 
             val view = FrameLayout(context).apply {
-                // Background
+                // Circular Background with Shadow
                 val bg = View(context).apply {
-                    setBackgroundColor(Color.parseColor("#FF6B6B"))
-                    alpha = 0.9f
-                    elevation = 8.dp.toFloat()
+                    val shape = android.graphics.drawable.GradientDrawable().apply {
+                        shape = android.graphics.drawable.GradientDrawable.OVAL
+                        setColor(Color.parseColor("#FF5252"))
+                        setStroke(2.dp, Color.WHITE)
+                    }
+                    background = shape
+                    elevation = 10.dp.toFloat()
                 }
-                addView(bg)
+                addView(bg, FrameLayout.LayoutParams(size, size))
 
-                // Icon (using a simple cross/X if we don't have vector resources, but let's assume standard)
+                // Close Icon
                 val icon = ImageView(context).apply {
                     setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
                     setColorFilter(Color.WHITE)
-                    setPadding(16.dp, 16.dp, 16.dp, 16.dp)
+                    setPadding(12.dp, 12.dp, 12.dp, 12.dp)
                 }
-                addView(icon)
+                addView(icon, FrameLayout.LayoutParams(size, size))
 
-                setOnClickListener { onStop() }
+                // Standard Click Listener as backup
+                setOnClickListener { 
+                    Log.d("OverlayMgr", "Standard click triggered")
+                    onStop() 
+                }
                 
                 // Make it draggable
                 var initialX = 0
@@ -125,6 +134,7 @@ class OverlayManager @Inject constructor(
                             initialTouchX = event.rawX
                             initialTouchY = event.rawY
                             startTime = System.currentTimeMillis()
+                            v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(100).start()
                             true
                         }
                         MotionEvent.ACTION_MOVE -> {
@@ -134,12 +144,14 @@ class OverlayManager @Inject constructor(
                             true
                         }
                         MotionEvent.ACTION_UP -> {
+                            v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(100).start()
                             val duration = System.currentTimeMillis() - startTime
                             val dx = Math.abs(event.rawX - initialTouchX)
                             val dy = Math.abs(event.rawY - initialTouchY)
                             
-                            if (dx < 10.dp && dy < 10.dp && duration < 400) {
-                                onStop()
+                            // More forgiving thresholds for a floating button
+                            if (dx < 25.dp && dy < 25.dp && duration < 600) {
+                                v.performClick()
                             }
                             true
                         }
