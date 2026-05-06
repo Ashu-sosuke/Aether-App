@@ -79,7 +79,8 @@ data class InboundMessage(
 
 @Serializable
 data class CommandPayload(
-    val action: ActionCommand = ActionCommand()
+    val action: ActionCommand = ActionCommand(),
+    val thought: String = ""
 )
 
 @Serializable

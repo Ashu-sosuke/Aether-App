@@ -22,6 +22,7 @@ import java.util.Locale
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -72,30 +73,20 @@ class AetherViewModel @Inject constructor(
             val trimmedGoal = goal.trim()
             if (trimmedGoal.isBlank()) return@launch
             try {
-                if (wsClient.connectionState.value !is AetherWebSocketClient.ConnectionState.CONNECTED) {
-                    errorMessage.value = "Not connected to Brain. Please check your URL and try again."
+                if (wsClient.connectionState.value !is
+                            AetherWebSocketClient.ConnectionState.CONNECTED) {
+                    errorMessage.value = "Not connected to Brain."
                     taskStatus.value = TaskStatus.ERROR
                     return@launch
                 }
-
                 taskStatus.value = TaskStatus.THINKING
                 val taskId = wsClient.startTask(trimmedGoal)
-                appendLog(context.getString(R.string.task_started_log, trimmedGoal, taskId))
-                
-                // Show floating stop button
-                overlayMgr.showStopButton {
-                    stopTask()
-                }
-                
-                // Auto-minimize the app to trigger accessibility events in other apps
-                val startMain = Intent(Intent.ACTION_MAIN)
-                startMain.addCategory(Intent.CATEGORY_HOME)
-                startMain.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(startMain)
-                
+                appendLog(context.getString(
+                    R.string.task_started_log, trimmedGoal, taskId))
+                overlayMgr.showStopButton { stopTask() }
             } catch (e: Exception) {
                 Log.e("AetherVM", "Failed to start task: ${e.message}", e)
-                errorMessage.value = "Connection failed: ${e.message}"
+                errorMessage.value = "Failed: ${e.message}"
                 taskStatus.value = TaskStatus.ERROR
             }
         }

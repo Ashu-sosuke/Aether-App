@@ -24,7 +24,7 @@ class SettingsDataStore @Inject constructor(
 
     // SET DEFAULT URL HERE
     val serverUrl: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[SERVER_URL_KEY] ?: "https://aether-brain.onrender.com"
+        prefs[SERVER_URL_KEY] ?: "https://aether-rl.onrender.com"
     }
 
     val alwaysConfirm: Flow<Boolean> = context.dataStore.data.map { prefs ->
